@@ -1,85 +1,169 @@
-// Import necessary libraries and modules
-const solid = require('solid-auth-client');
-const rdf = require('rdflib');
+// Import from "@inrupt/solid-client-authn-browser"
+import { login, handleIncomingRedirect, getDefaultSession, fetch } from "@inrupt/solid-client-authn-browser";
 
-// Function to handle user login
-export async function login(username, password) {
-  try {
-    // Authenticate user using their credentials
-    await solid.login(username, password);
-    console.log('User logged in successfully!');
-  } catch (error) {
-    console.error('Error logging in:', error);
+// Import from "@inrupt/solid-client"
+import { addUrl, addStringNoLocale, createSolidDataset, createThing,
+  getPodUrlAll, getSolidDataset, getThingAll, getStringNoLocale,
+  removeThing, saveSolidDatasetAt, setThing } from "@inrupt/solid-client";
+
+import { SCHEMA_INRUPT, RDF, AS } from "@inrupt/vocab-common-rdf";
+
+const selectorIdP = document.querySelector("#select-idp");
+const selectorPod = document.querySelector("#select-pod");
+const buttonLogin = document.querySelector("#btnLogin");
+const buttonRead = document.querySelector("#btnRead");
+const buttonCreate = document.querySelector("#btnCreate");
+const labelCreateStatus = document.querySelector("#labelCreateStatus");
+
+buttonRead.setAttribute("disabled", "disabled");
+buttonLogin.setAttribute("disabled", "disabled");
+buttonCreate.setAttribute("disabled", "disabled");
+
+// 1a. Start Login Process. Call login() function.
+function loginToSelectedIdP() {
+  const SELECTED_IDP = document.getElementById("select-idp").value;
+
+  return login({
+    oidcIssuer: SELECTED_IDP,
+    redirectUrl: new URL("/", window.location.href).toString(),
+    clientName: "Getting started app"
+  });
+}
+
+// 1b. Login Redirect. Call handleIncomingRedirect() function.
+// When redirected after login, finish the process by retrieving session information.
+async function handleRedirectAfterLogin() {
+  await handleIncomingRedirect(); // no-op if not part of login redirect
+
+  const session = getDefaultSession();
+  if (session.info.isLoggedIn) {
+    // Update the page with the status.
+    document.getElementById("myWebID").value = session.info.webId;
+
+    // Enable Read button to read Pod URL
+    buttonRead.removeAttribute("disabled");
   }
 }
 
-// Function to manage permissions for another SOLID-supported website (CIMDB)
-export async function managePermissions(webId, permissions) {
-  try {
-    // Load user's profile data using their WebID
-    const store = rdf.graph();
-    const fetcher = new rdf.Fetcher(store);
-    await fetcher.load(webId);
+// The example has the login redirect back to the root page.
+// The page calls this method, which, in turn, calls handleIncomingRedirect.
+handleRedirectAfterLogin();
 
-    // Update permissions for CIMDB in the user's profile data
-    // Example: Add read and write permissions for CIMDB
-    const cimdbResource = rdf.sym('https://example.com/cimdb');
-    const aclResource = rdf.sym('http://www.w3.org/ns/auth/acl#');
-    const modes = ['Read', 'Write'];
-    
-    modes.forEach(mode => {
-      const permission = store.sym(`${cimdbResource.value}#${mode}Permission`);
-      store.add(cimdbResource, aclResource('mode'), permission);
-      store.add(permission, aclResource('mode'), aclResource(mode));
-      store.add(permission, aclResource('agent'), webId);
+// 2. Get Pod(s) associated with the WebID
+async function getMyPods() {
+  const webID = document.getElementById("myWebID").value;
+  const mypods = await getPodUrlAll(webID, { fetch: fetch });
+
+  // Update the page with the retrieved values
+  mypods.forEach((mypod) => {
+    let podOption = document.createElement("option");
+    podOption.textContent = mypod;
+    podOption.value = mypod;
+    selectorPod.appendChild(podOption);
+  });
+}
+
+// 3. Create the Reading List
+async function createList() {
+  labelCreateStatus.textContent = "";
+  const SELECTED_POD = document.getElementById("select-pod").value;
+
+  // For simplicity and brevity, this tutorial hardcodes the  SolidDataset URL.
+  // In practice, you should add in your profile a link to this resource
+  // such that applications can follow to find your list.
+  const readingListUrl = `${SELECTED_POD}getting-started/readingList/myList`;
+
+  let titles = document.getElementById("titles").value.split("\n");
+
+  // Fetch or create a new reading list.
+  let myReadingList;
+
+  try {
+    // Attempt to retrieve the reading list in case it already exists.
+    myReadingList = await getSolidDataset(readingListUrl, { fetch: fetch });
+    // Clear the list to override the whole list
+    let items = getThingAll(myReadingList);
+    items.forEach((item) => {
+      myReadingList = removeThing(myReadingList, item);
     });
-
-    // Save updated profile data to the user's POD
-    await solid.saveProfile(webId, store);
-    console.log('Permissions updated successfully!');
   } catch (error) {
-    console.error('Error managing permissions:', error);
+    if (typeof error.statusCode === "number" && error.statusCode === 404) {
+      // if not found, create a new SolidDataset (i.e., the reading list)
+      myReadingList = createSolidDataset();
+    } else {
+      console.error(error.message);
+    }
   }
-}
 
-// Function to check users' earnings from browsing data shared with CIMDB
-export async function checkEarnings(webId) {
+  // Add titles to the Dataset
+  let i = 0;
+  titles.forEach((title) => {
+    if (title.trim() !== "") {
+      let item = createThing({ name: "title" + i });
+      item = addUrl(item, RDF.type, AS.Article);
+      item = addStringNoLocale(item, SCHEMA_INRUPT.name, title);
+      myReadingList = setThing(myReadingList, item);
+      i++;
+    }
+  });
+
   try {
-    // Load user's earnings data from their POD
-    const earningsFile = `${webId}/earnings.ttl`;
-    const earningsData = await solid.readFile(earningsFile);
+    // Save the SolidDataset
+    let savedReadingList = await saveSolidDatasetAt(
+      readingListUrl,
+      myReadingList,
+      { fetch: fetch }
+    );
 
-    // Process and display earnings data
-    console.log('User earnings:', earningsData);
+    labelCreateStatus.textContent = "Saved";
+
+    // Refetch the Reading List
+    savedReadingList = await getSolidDataset(readingListUrl, { fetch: fetch });
+
+    let items = getThingAll(savedReadingList);
+
+    let listcontent = "";
+    for (let i = 0; i < items.length; i++) {
+      let item = getStringNoLocale(items[i], SCHEMA_INRUPT.name);
+      if (item !== null) {
+        listcontent += item + "\n";
+      }
+    }
+
+    document.getElementById("savedtitles").value = listcontent;
   } catch (error) {
-    console.error('Error checking earnings:', error);
+    console.log(error);
+    labelCreateStatus.textContent = "Error" + error;
+    labelCreateStatus.setAttribute("role", "alert");
   }
 }
 
-// Function to check details of data paid for by IRWorld on specific dates
-export async function checkPaidData(webId, date) {
-  try {
-    // Load paid data details from user's POD for the specified date
-    const paidDataFile = `${webId}/paid_data_${date}.json`;
-    const paidData = await solid.readFile(paidDataFile);
+buttonLogin.onclick = function () {
+  loginToSelectedIdP();
+};
 
-    // Process and display paid data details
-    console.log(`Paid data details for ${date}:`, paidData);
-  } catch (error) {
-    console.error('Error checking paid data:', error);
+buttonRead.onclick = function () {
+  getMyPods();
+};
+
+buttonCreate.onclick = function () {
+  createList();
+};
+
+selectorIdP.addEventListener("change", idpSelectionHandler);
+function idpSelectionHandler() {
+  if (selectorIdP.value === "") {
+    buttonLogin.setAttribute("disabled", "disabled");
+  } else {
+    buttonLogin.removeAttribute("disabled");
   }
 }
 
-/* Example usage of the functions
-const username = 'your_username';
-const password = 'your_password';
-const webId = 'https://example.com/user1#me';
-const permissions = ['Read', 'Write'];
-const date = '2023-09-18';
-
-login(username, password)
-  .then(() => managePermissions(webId, permissions))
-  .then(() => checkEarnings(webId))
-  .then(() => checkPaidData(webId, date))
-  .catch(error => console.error('Error:', error));
-*/
+selectorPod.addEventListener("change", podSelectionHandler);
+function podSelectionHandler() {
+  if (selectorPod.value === "") {
+    buttonCreate.setAttribute("disabled", "disabled");
+  } else {
+    buttonCreate.removeAttribute("disabled");
+  }
+}
