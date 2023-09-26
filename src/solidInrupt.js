@@ -23,7 +23,7 @@ export async function managePermissions(webId, permissions) {
 
     // Update permissions for CIMDB in the user's profile data
     // Example: Add read and write permissions for CIMDB
-    const cimdbResource = rdf.sym('http://localhost:3000');//'https://example.com/cimdb');
+    const cimdbResource = rdf.sym('https://example.com/cimdb');
     const aclResource = rdf.sym('http://www.w3.org/ns/auth/acl#');
     const modes = ['Read', 'Write'];
     
